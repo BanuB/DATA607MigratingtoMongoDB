@@ -1,0 +1,150 @@
+---
+title: "DATA607 MigratingMongoDB"
+author: "Banu Boopalan"
+date: "11/24/2019"
+output:
+  html_document:
+    css:
+    highlight: pygments
+    theme: cerulean
+    toc: true
+    toc_float: true
+    code_folding: hide
+  ioslides_presentation: default
+  pdf_document: default
+  slidy_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(readr)
+library(kableExtra)
+library(ggplot2)
+library(reshape2)
+library(RMySQL)
+library(mongolite) 
+```
+
+## Migrating to MongoDB
+
+Process: I created a MongoDB cluster for free on Atlas account, then tried to migrate my movierating database to the cluster.
+Because my IP is whitelisted, only my IP will be allowed to access my Mongodb cluster. So, from a reproducibility standpoint, I may 
+have to list another IP address if a connection should be allowed into my cloud account. 
+Once done, I then tried to use some query through Mongolite user manual here https://jeroen.github.io/mongolite/
+
+## Connect to mysql and pull in tables first into R Dataframe
+
+
+```{r}
+con <- DBI::dbConnect(RMySQL::MySQL(), 
+                      host = "localhost",
+                      username = "cunyuser",
+                      dbname="dbmovierating",
+                      password = "bar"
+)
+dbListTables(con)
+
+
+movieinfo_df = dbSendQuery(con, "select * from movieinfo")
+dfmovieinfo = fetch(movieinfo_df, n=-1)
+head(dfmovieinfo)
+nrow(dfmovieinfo)
+
+prsninfo_df = dbSendQuery(con, "select * from personinfo")
+dfprsninfo = fetch(prsninfo_df , n=-1)
+head(dfprsninfo)
+nrow(dfprsninfo)
+
+prsnrating_df = dbSendQuery(con, "select * from personrating")
+dfprsnrating = fetch(prsnrating_df, n=-1)
+head(dfprsnrating)
+nrow(dfprsnrating)
+
+ratingdef_df = dbSendQuery(con, "select * from ratingdef")
+dfratingdef = fetch(ratingdef_df, n=-1)
+head(dfratingdef)
+nrow(dfratingdef)
+
+dbDisconnect(con)
+```
+
+## Connect to mongodb cluster in cloud and view sample collection for airbnb that was loaded on that cluster and disconnect connection
+
+
+```{r}
+#make connection object that specifies new database and collection (dataset)
+url_path =  'mongodb+srv://BBMongoUser:cunybar@clusterbb0-ya3fv.azure.mongodb.net/test?retryWrites=true&w=majority'
+mongocon <- mongo(collection = "listingsAndReviews", db = "sample_airbnb", 
+               url = url_path, 
+               verbose = TRUE)
+
+str(mongocon)
+print(mongocon)
+mongocon$count('{}')
+rm(mongocon)
+```
+
+
+## Open new connection to create my new collection in cloud and insert and perform aggregate pipeline command to show averating rating for one person as well as my using match in aggregate pipeline. disconnect
+
+
+```{r}
+#data("dfmovieinfo")
+moviecon <- mongo(collection = "dfmovieinfo", # Creating collection
+                         db = "sample_dbmovierating_R", # Creating DataBase
+                         url = url_path, 
+                         verbose = TRUE)
+
+# insert code
+moviecon$insert(dfmovieinfo)
+moviecon$find(limit = 5)
+moviecon$insert(dfprsnrating)
+moviecon$find(limit = 5)
+moviecon$count('{}')
+print(moviecon)
+
+
+```
+
+## Perform Find and update on the new collection in my cloud mongo data collection
+
+Summary: Different between sql and no sql
+
+1. While SQL is executed on a predefined schema, it is very beneficial for highly transaction based databases that demand high data integrity and pre-defined rules governing the type of data, formats that would get into the database through set ETL processes. For unstructured data, it is easier for MongoDB to scale when millions of users access the web application and the type of application and features offered in the web application.  
+2. In my experience within a prior application that I worked with in my role as a devops engineer, all of our ETL was connected to Microsoft sql server when it came to our web application and data that was housed and we had CRM connected to sql server and .COM front end application. Also we had more restrictions due to PII data so the target customers may not be in the millions which is different from web applications such as Amazon, Expedia, ebay etc.. that deal with unstructured data and features based on extracting and accessing unstructured data.  
+3. Here is a use case link that really breaks down the advantages of using mongodb over a RDBMS. https://www.mongodb.com/customers/expedia.
+In the link, it is amazing to see that Expedia built a scratchpad app that allowed users to keep track of notes and which required more dynamic database that needed to take in unstructured data. The RDBMS model would have taken more effort to normalize and rigidity unlike mongodb that was built to store user notes and able to search for real time prices and users needed access to faster data in real time as well as even when the users were offline to present more options to users. The prototype for mongoDB was also able to support the development much faster by a smaller development team. Also one more area they talk about is how they were able to not take the application down and were able to to scale the backend database for the application while production site was still up. From my experience, I know that as a devops engineer for the web application I was working on, we would only deploy at nighttime windows and have to put up  the blackout page when our app pool were getting reset and our code was being deployed. I woud like to understand how the Expedia team built as this use case mentions without bringing downt their application, and deploying while the application was in use.
+4. Using Mongo's documentation, It was not as easy to navigate the query syntax possibly because there is a lot to learn in Mongodb's documents/collections and accessing the arrays. This requires more practice for me in syntax and how the querying can be done within Mongodb.
+
+
+```{r}
+#CRUD operations
+moviecon$find('{"personrating_id":28}')
+moviecon$update('{"personrating_id":28}','{"$set":{"Rating": 4.5}}')
+moviecon$find('{"personrating_id":28}')
+
+#Aggregate
+stats <- moviecon$aggregate(
+  '[{"$group":{"_id":"$RaterName", "average":{"$avg":"$Rating"}}}]',
+  options = '{"allowDiskUse":true}'
+)
+print(stats)
+
+#Aggregate
+stats1 <- moviecon$aggregate(
+  '[{"$match":{"Title":"John Wick (2014)"}},{"$group":{"_id":"$Title", "average":{"$avg":"$Rating"}}}]',
+  options = '{"allowDiskUse":true}'
+)
+print(stats1)
+
+stats2 <- moviecon$aggregate(
+  '[{"$match":{"Title":"John Wick (2014)"}}]',options = '{"allowDiskUse":true}'
+)
+
+print(stats2)
+rm(moviecon)
+
+```
